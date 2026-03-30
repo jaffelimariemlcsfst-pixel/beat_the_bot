@@ -16,6 +16,7 @@ class ResultScreen extends StatefulWidget {
   final String answerType;
   final bool isGameOver;
   final List<String> askedQuestions;
+  final int questionsAnswered; // ← NEW: carries the count across rounds
 
   const ResultScreen({
     super.key,
@@ -28,6 +29,7 @@ class ResultScreen extends StatefulWidget {
     required this.answerType,
     required this.isGameOver,
     this.askedQuestions = const [],
+    this.questionsAnswered = 0, // ← NEW
   });
 
   @override
@@ -48,10 +50,11 @@ class _ResultScreenState extends State<ResultScreen>
     _ctrl.forward();
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (widget.isGameOver)
+      if (widget.isGameOver) {
         context.read<UserProvider>().updateHighScore(
               context.read<GameProvider>().score,
             );
+      }
     });
   }
 
@@ -175,8 +178,11 @@ class _ResultScreenState extends State<ResultScreen>
             ])
           : Row(children: [
               Expanded(
-                  child: _OutlineButton(
-                      label: 'End ', onTap: () => context.go('/'))),
+                child: _OutlineButton(
+                  label: 'End ',
+                  onTap: () => context.go('/'),
+                ),
+              ),
               const SizedBox(width: 12),
               Expanded(
                 child: _BigButton(
@@ -187,6 +193,7 @@ class _ResultScreenState extends State<ResultScreen>
                     'answerType': widget.answerType,
                     'isNewGame': false,
                     'previousQuestions': widget.askedQuestions,
+                    'questionsAnswered': widget.questionsAnswered, // ← NEW: pass count forward
                   }),
                 ),
               ),
@@ -195,14 +202,16 @@ class _ResultScreenState extends State<ResultScreen>
   }
 }
 
+// ─── Info card ────────────────────────────────────────────────────────────────
 class _InfoCard extends StatelessWidget {
   final String label, content, icon;
   final Color accent;
-  const _InfoCard(
-      {required this.label,
-      required this.content,
-      required this.accent,
-      required this.icon});
+  const _InfoCard({
+    required this.label,
+    required this.content,
+    required this.accent,
+    required this.icon,
+  });
 
   @override
   Widget build(BuildContext context) => Container(
@@ -234,6 +243,7 @@ class _InfoCard extends StatelessWidget {
       );
 }
 
+// ─── XP badge ─────────────────────────────────────────────────────────────────
 class _XpBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Container(
@@ -259,6 +269,7 @@ class _XpBadge extends StatelessWidget {
       );
 }
 
+// ─── Score summary ────────────────────────────────────────────────────────────
 class _ScoreSummary extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
@@ -269,7 +280,7 @@ class _ScoreSummary extends StatelessWidget {
       decoration: BoxDecoration(
         gradient: LinearGradient(colors: [
           AppTheme.purple.withOpacity(0.08),
-          AppTheme.pink.withOpacity(0.08)
+          AppTheme.pink.withOpacity(0.08),
         ]),
         borderRadius: BorderRadius.circular(AppTheme.radius),
         border: Border.all(color: AppTheme.purple.withOpacity(0.2)),
@@ -296,6 +307,7 @@ class _ScoreSummary extends StatelessWidget {
   }
 }
 
+// ─── Big button ───────────────────────────────────────────────────────────────
 class _BigButton extends StatefulWidget {
   final String label;
   final Color color;
@@ -360,6 +372,7 @@ class _BigButtonState extends State<_BigButton>
       );
 }
 
+// ─── Outline button ───────────────────────────────────────────────────────────
 class _OutlineButton extends StatelessWidget {
   final String label;
   final VoidCallback onTap;

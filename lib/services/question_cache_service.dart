@@ -82,16 +82,17 @@ class QuestionCacheService {
       if (rows.isEmpty) return null;
 
       // Filter out already-asked questions this session
+      // WITH THIS
       final available = rows.where((row) {
         final prompt = row['prompt'] as String? ?? '';
-        return !excludePrompts.contains(prompt);
+        final usedCount = row['used_count'] as int? ?? 0;
+        return !excludePrompts.contains(prompt) && usedCount < 3; // ← max 3 uses
       }).toList();
 
       if (available.isEmpty) return null;
 
       // Pick a random one from available (weighted toward less-used)
-      final row = available[_rng.nextInt(min(available.length, 5))];
-
+      final row = available[_rng.nextInt(available.length)];
       // Increment used_count (fire and forget)
       _incrementUsedCount(row['id'] as int);
 

@@ -31,7 +31,6 @@ class UserProvider extends ChangeNotifier {
   Future<void> restoreSession() async {
     final restored = await _supabase.restoreSession();
     if (restored) {
-      // Proactively refresh token on app start so it doesn't expire mid-session
       await _supabase.refreshSession();
       await _loadAllUserData();
       notifyListeners();
@@ -67,12 +66,9 @@ class UserProvider extends ChangeNotifier {
 
   Future<void> _loadAllUserData() async {
     if (_supabase.userId == null) return;
-
     final saved = await _supabase.loadProgress(_supabase.userId!);
     if (saved != null) _progress = saved;
-
     _username = await _supabase.getUsername();
-
     _loadAvatarUrl();
   }
 
@@ -86,8 +82,6 @@ class UserProvider extends ChangeNotifier {
 
   // ─── TOKEN REFRESH HELPER ─────────────────────────────────────────────────
 
-  /// Retries [call] once after refreshing the token if JWT has expired.
-  /// If refresh also fails, signs the user out.
   Future<T> _withTokenRefresh<T>(Future<T> Function() call) async {
     try {
       return await call();
@@ -99,7 +93,7 @@ class UserProvider extends ChangeNotifier {
           await signOut();
           throw Exception('Session expired. Please log in again.');
         }
-        return await call(); // retry once with new token
+        return await call();
       }
       rethrow;
     }
@@ -128,8 +122,8 @@ class UserProvider extends ChangeNotifier {
     _uploadingAvatar = true;
     notifyListeners();
     try {
-      final url = await _withTokenRefresh(
-          () => _supabase.uploadAvatar(imageFile));
+      final url =
+          await _withTokenRefresh(() => _supabase.uploadAvatar(imageFile));
       _avatarUrl = '$url?t=${DateTime.now().millisecondsSinceEpoch}';
     } catch (e) {
       debugPrint('Avatar upload error: $e');
@@ -161,7 +155,15 @@ class UserProvider extends ChangeNotifier {
     _syncProgress();
   }
 
-  void recordPlayToday() {
+  // ─── STREAK ───────────────────────────────────────────────────────────────
+
+  /// Called when a session ends with ≥5 questions answered.
+  /// The streak logic lives in UserProgress.recordPlayToday():
+  ///   - played today already  → no change (idempotent)
+  ///   - played yesterday      → streak + 1
+  ///   - not played in 2+ days → streak resets to 1
+  /// Then syncs streak + last_played_date to Supabase.
+  void recordSessionComplete() {
     _progress = _progress.recordPlayToday();
     notifyListeners();
     _syncProgress();

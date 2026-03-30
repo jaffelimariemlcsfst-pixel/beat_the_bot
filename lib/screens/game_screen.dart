@@ -15,12 +15,15 @@ class GameScreen extends StatefulWidget {
   final String answerType;
   final bool isNewGame;
   final List<String> previousQuestions;
+  final int questionsAnswered; // ← survives navigation hops via router extra
+
   const GameScreen({
     super.key,
     this.topic,
     required this.answerType,
     this.isNewGame = true,
     this.previousQuestions = const [],
+    this.questionsAnswered = 0, // ← NEW
   });
 
   @override
@@ -37,7 +40,7 @@ class _GameScreenState extends State<GameScreen> {
   bool _loading = true;
   bool _submitting = false;
   String? _error;
-  int _timeLeft = 30;
+  int _timeLeft = 60;
   Timer? _timer;
   int _selectedChoice = -1;
   String _resolvedAnswerType = 'write';
@@ -46,14 +49,18 @@ class _GameScreenState extends State<GameScreen> {
   List<Offset?> _currentStroke = [];
   List<String?> _imageUrls = [];
 
+  // Initialized from widget so it survives round-to-round navigation
+  late int _questionsAnswered;
+  static const int _streakThreshold = 5;
+
   @override
   void initState() {
     super.initState();
+    _questionsAnswered = widget.questionsAnswered; // ← key fix
     _askedQuestions.addAll(widget.previousQuestions);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (widget.isNewGame) {
         context.read<GameProvider>().startSession();
-        context.read<UserProvider>().recordPlayToday();
       }
       _loadQuestion();
     });
@@ -65,6 +72,8 @@ class _GameScreenState extends State<GameScreen> {
     _textCtrl.dispose();
     super.dispose();
   }
+
+  // ─── Timer ───────────────────────────────────────────────────────────────
 
   void _startTimer() {
     _timer?.cancel();
@@ -78,6 +87,8 @@ class _GameScreenState extends State<GameScreen> {
       }
     });
   }
+
+  // ─── Load question ────────────────────────────────────────────────────────
 
   Future<void> _loadQuestion() async {
     setState(() {
@@ -108,7 +119,6 @@ class _GameScreenState extends State<GameScreen> {
         _loading = false;
       });
 
-      // Fetch Unsplash images in parallel AFTER showing the question
       if (type == 'pick_image' &&
           q.imageOptions != null &&
           q.imageOptions!.isNotEmpty) {
@@ -132,26 +142,43 @@ class _GameScreenState extends State<GameScreen> {
     return types.first;
   }
 
+  // ─── Submit answer ────────────────────────────────────────────────────────
+
   Future<void> _submitAnswer(String answer) async {
     if (_submitting || _question == null) return;
     final capturedTimeLeft = _timeLeft;
     _timer?.cancel();
     setState(() => _submitting = true);
+
     try {
       final result = await _aiService.judgeAnswer(
           _question!, _question!.correctAnswer, answer);
       if (!mounted) return;
+
       final gp = context.read<GameProvider>();
       final up = context.read<UserProvider>();
+
       if (result['isCorrect'] == true) {
         gp.addScore(10, timeLeft: capturedTimeLeft);
         up.addXp(20);
       } else {
         gp.loseLife();
       }
+
+      // Increment BEFORE passing to result so it displays the updated count
+      _questionsAnswered++;
       gp.advanceRound();
-      final gameOver = gp.lives <= 0 || gp.currentRound > 5;
-      if (gameOver) up.updateHighScore(gp.score);
+
+      // Game over only when lives run out — no round cap
+      final gameOver = gp.lives <= 0;
+
+      if (gameOver) {
+        if (_questionsAnswered >= _streakThreshold) {
+          up.recordSessionComplete();
+        }
+        up.updateHighScore(gp.score);
+      }
+
       context.go('/result', extra: {
         'question': _question,
         'userAnswer': answer,
@@ -161,6 +188,7 @@ class _GameScreenState extends State<GameScreen> {
         'topic': widget.topic,
         'answerType': widget.answerType,
         'isGameOver': gameOver,
+        'questionsAnswered': _questionsAnswered, // ← passed forward
         'askedQuestions': List<String>.from(_askedQuestions),
       });
     } catch (_) {
@@ -168,6 +196,34 @@ class _GameScreenState extends State<GameScreen> {
       setState(() => _submitting = false);
     }
   }
+
+  // ─── End session (user-initiated) ─────────────────────────────────────────
+
+  void _endSession() {
+    _timer?.cancel();
+    final up = context.read<UserProvider>();
+    final gp = context.read<GameProvider>();
+
+    if (_questionsAnswered >= _streakThreshold) {
+      up.recordSessionComplete();
+    }
+    up.updateHighScore(gp.score);
+
+    context.go('/result', extra: {
+      'question': _question,
+      'userAnswer': '',
+      'isCorrect': false,
+      'feedback': 'You ended the session.',
+      'optimalAnswer': '',
+      'topic': widget.topic,
+      'answerType': widget.answerType,
+      'isGameOver': true,
+      'questionsAnswered': _questionsAnswered,
+      'askedQuestions': List<String>.from(_askedQuestions),
+    });
+  }
+
+  // ─── Build ────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -177,7 +233,11 @@ class _GameScreenState extends State<GameScreen> {
       body: SafeArea(
         child: Column(
           children: [
-            _HUD(lives: gp.lives, round: gp.currentRound, timeLeft: _timeLeft),
+            _HUD(
+              lives: gp.lives,
+              questionsAnswered: _questionsAnswered,
+              timeLeft: _timeLeft,
+            ),
             Expanded(
               child: _loading
                   ? _buildLoading()
@@ -243,6 +303,8 @@ class _GameScreenState extends State<GameScreen> {
         _SubmitBar(
           submitting: _submitting,
           answerType: q.answerType,
+          questionsAnswered: _questionsAnswered,
+          streakThreshold: _streakThreshold,
           onSubmit: () {
             String ans;
             switch (_resolvedAnswerType) {
@@ -263,6 +325,7 @@ class _GameScreenState extends State<GameScreen> {
             }
             _submitAnswer(ans);
           },
+          onEndSession: _endSession,
         ),
       ],
     );
@@ -306,9 +369,14 @@ class _GameScreenState extends State<GameScreen> {
 
 // ─── HUD ─────────────────────────────────────────────────────────────────────
 class _HUD extends StatelessWidget {
-  final int lives, round, timeLeft;
-  const _HUD(
-      {required this.lives, required this.round, required this.timeLeft});
+  final int lives;
+  final int questionsAnswered;
+  final int timeLeft;
+  const _HUD({
+    required this.lives,
+    required this.questionsAnswered,
+    required this.timeLeft,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -328,6 +396,7 @@ class _HUD extends StatelessWidget {
       ),
       child: Row(
         children: [
+          // Lives
           Row(
               children: List.generate(
                   3,
@@ -342,20 +411,24 @@ class _HUD extends StatelessWidget {
                         ),
                       ))),
           const Spacer(),
+          // Question counter (replaces old Round X/5)
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
             decoration: BoxDecoration(
               color: AppTheme.purple.withOpacity(0.1),
               borderRadius: BorderRadius.circular(20),
             ),
-            child: Text('Round $round / 5',
-                style: const TextStyle(
-                    fontFamily: 'Nunito',
-                    fontSize: 12,
-                    fontWeight: FontWeight.w800,
-                    color: AppTheme.purple)),
+            child: Text(
+              'Q$questionsAnswered answered',
+              style: const TextStyle(
+                  fontFamily: 'Nunito',
+                  fontSize: 12,
+                  fontWeight: FontWeight.w800,
+                  color: AppTheme.purple),
+            ),
           ),
           const Spacer(),
+          // Timer
           AnimatedDefaultTextStyle(
             duration: const Duration(milliseconds: 200),
             style: TextStyle(
@@ -569,7 +642,6 @@ class _PickImage extends StatelessWidget {
               child: Stack(
                 fit: StackFit.expand,
                 children: [
-                  // ── Image or placeholder ──────────────────────────────
                   if (imageUrl != null)
                     Image.network(
                       imageUrl,
@@ -597,7 +669,6 @@ class _PickImage extends StatelessWidget {
                       ),
                     )
                   else
-                    // Still fetching URL — shimmer placeholder
                     Container(
                       color: color.withOpacity(0.08),
                       child: Center(
@@ -607,8 +678,6 @@ class _PickImage extends StatelessWidget {
                         ),
                       ),
                     ),
-
-                  // ── Gradient + label at bottom ────────────────────────
                   Positioned(
                     left: 0,
                     right: 0,
@@ -640,8 +709,6 @@ class _PickImage extends StatelessWidget {
                       ),
                     ),
                   ),
-
-                  // ── Selected checkmark ────────────────────────────────
                   if (sel)
                     Positioned(
                       top: 6,
@@ -669,7 +736,7 @@ class _PickImage extends StatelessWidget {
   }
 }
 
-// ─── Label fallback (when image fails to load) ────────────────────────────────
+// ─── Label fallback ───────────────────────────────────────────────────────────
 class _LabelFallback extends StatelessWidget {
   final String label;
   final Color color;
@@ -791,55 +858,123 @@ class _DrawPainter extends CustomPainter {
 class _SubmitBar extends StatelessWidget {
   final bool submitting;
   final String answerType;
+  final int questionsAnswered;
+  final int streakThreshold;
   final VoidCallback onSubmit;
-  const _SubmitBar(
-      {required this.submitting,
-      required this.answerType,
-      required this.onSubmit});
+  final VoidCallback onEndSession;
+
+  const _SubmitBar({
+    required this.submitting,
+    required this.answerType,
+    required this.questionsAnswered,
+    required this.streakThreshold,
+    required this.onSubmit,
+    required this.onEndSession,
+  });
 
   @override
-  Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
-        child: submitting
-            ? Center(
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(
-                            valueColor: AlwaysStoppedAnimation(AppTheme.purple),
-                            strokeWidth: 2.5)),
-                    const SizedBox(width: 12),
-                    Text('Judging your answer...',
-                        style: TextStyle(
-                            fontFamily: 'Nunito',
-                            fontSize: 14,
-                            fontWeight: FontWeight.w700,
-                            color: AppTheme.textMid)),
-                  ],
+  Widget build(BuildContext context) {
+    final streakReady = questionsAnswered >= streakThreshold;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+      child: Column(
+        children: [
+          submitting
+              ? Center(
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                              valueColor:
+                                  AlwaysStoppedAnimation(AppTheme.purple),
+                              strokeWidth: 2.5)),
+                      const SizedBox(width: 12),
+                      Text('Judging your answer...',
+                          style: TextStyle(
+                              fontFamily: 'Nunito',
+                              fontSize: 14,
+                              fontWeight: FontWeight.w700,
+                              color: AppTheme.textMid)),
+                    ],
+                  ),
+                )
+              : _PillButton(
+                  label: 'Submit Answer',
+                  color: AppTheme.purple,
+                  onTap: onSubmit,
+                  fullWidth: true,
                 ),
-              )
-            : _PillButton(
-                label: 'Submit Answer',
-                color: AppTheme.purple,
-                onTap: onSubmit,
-                fullWidth: true),
-      );
+
+          const SizedBox(height: 10),
+
+          // End Session button — grey until streak threshold met, then green
+          GestureDetector(
+            onTap: onEndSession,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 300),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+              decoration: BoxDecoration(
+                color: streakReady
+                    ? AppTheme.mint.withOpacity(0.12)
+                    : Colors.transparent,
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(
+                  color: streakReady
+                      ? AppTheme.mint
+                      : AppTheme.textLight.withOpacity(0.4),
+                  width: 1.5,
+                ),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    streakReady
+                        ? Icons.local_fire_department_rounded
+                        : Icons.stop_circle_outlined,
+                    size: 16,
+                    color: streakReady ? AppTheme.mint : AppTheme.textLight,
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    streakReady
+                        ? 'End Session  •  Streak earned! 🔥'
+                        : 'End Session  •  ${questionsAnswered}/$streakThreshold for streak',
+                    style: TextStyle(
+                      fontFamily: 'Nunito',
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color:
+                          streakReady ? AppTheme.mint : AppTheme.textLight,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
-// ─── Shared button ────────────────────────────────────────────────────────────
+// ─── Shared pill button ───────────────────────────────────────────────────────
 class _PillButton extends StatefulWidget {
   final String label;
   final Color color;
   final VoidCallback onTap;
   final bool fullWidth;
-  const _PillButton(
-      {required this.label,
-      required this.color,
-      required this.onTap,
-      this.fullWidth = false});
+  const _PillButton({
+    required this.label,
+    required this.color,
+    required this.onTap,
+    this.fullWidth = false,
+  });
 
   @override
   State<_PillButton> createState() => _PillButtonState();

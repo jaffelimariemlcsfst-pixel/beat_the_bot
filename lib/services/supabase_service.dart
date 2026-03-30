@@ -26,20 +26,18 @@ class SupabaseService {
         'Authorization': 'Bearer ${_accessToken ?? _anonKey}',
       };
 
-  // ─── SESSION PERSISTENCE ─────────────────────────────────────────────────
+  // ─── SESSION PERSISTENCE ──────────────────────────────────────────────────
 
-  /// Restores saved session from shared_preferences on app start.
-  /// Returns true if a session was found.
   Future<bool> restoreSession() async {
     final prefs = await SharedPreferences.getInstance();
     final token = prefs.getString(_kToken);
     final uid = prefs.getString(_kUserId);
-    final refresh = prefs.getString(_kRefresh); // ADD THIS
+    final refresh = prefs.getString(_kRefresh);
     if (token != null && uid != null) {
       _accessToken = token;
-     _userId = uid;
-     _refreshToken = refresh; // ADD THIS
-     return true;
+      _userId = uid;
+      _refreshToken = refresh;
+      return true;
     }
     return false;
   }
@@ -50,7 +48,7 @@ class SupabaseService {
       await prefs.setString(_kToken, _accessToken!);
       await prefs.setString(_kUserId, _userId!);
       if (_refreshToken != null) {
-        await prefs.setString(_kRefresh, _refreshToken!); // ADD THIS
+        await prefs.setString(_kRefresh, _refreshToken!);
       }
     }
   }
@@ -59,10 +57,10 @@ class SupabaseService {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_kToken);
     await prefs.remove(_kUserId);
-    await prefs.remove(_kRefresh); // ADD THIS
+    await prefs.remove(_kRefresh);
   }
 
-  // ─── AUTH ────────────────────────────────────────────────────────────────
+  // ─── AUTH ─────────────────────────────────────────────────────────────────
 
   Future<void> signUp(String email, String password) async {
     final response = await http.post(
@@ -81,7 +79,7 @@ class SupabaseService {
 
     _accessToken = data['access_token'];
     _userId = data['user']?['id'];
-    _refreshToken = data['refresh_token']; // ADD THIS LINE IN BOTH
+    _refreshToken = data['refresh_token'];
     await _persistSession();
   }
 
@@ -103,15 +101,17 @@ class SupabaseService {
 
     _accessToken = data['access_token'];
     _userId = data['user']?['id'];
-    _refreshToken = data['refresh_token']; // ADD THIS LINE IN BOTH
+    _refreshToken = data['refresh_token'];
     await _persistSession();
   }
 
   Future<void> signOut() async {
     _accessToken = null;
     _userId = null;
+    _refreshToken = null;
     await _clearSession();
   }
+
   Future<bool> refreshSession() async {
     if (_refreshToken == null) return false;
     try {
@@ -135,17 +135,15 @@ class SupabaseService {
     }
   }
 
-  // ─── PROFILE ─────────────────────────────────────────────────────────────
+  // ─── PROFILE ──────────────────────────────────────────────────────────────
 
   Future<String?> getUsername() async {
     if (_userId == null) return null;
-
     final response = await http.get(
       Uri.parse(
           '$_supabaseUrl/rest/v1/profiles?id=eq.$_userId&select=username&limit=1'),
       headers: _headers,
     );
-
     if (response.statusCode >= 400) return null;
     final rows = jsonDecode(response.body) as List<dynamic>;
     if (rows.isEmpty) return null;
@@ -154,7 +152,6 @@ class SupabaseService {
 
   Future<void> updateUsername(String username) async {
     if (_userId == null) throw Exception('Not authenticated');
-
     final response = await http.patch(
       Uri.parse('$_supabaseUrl/rest/v1/profiles?id=eq.$_userId'),
       headers: {
@@ -163,17 +160,15 @@ class SupabaseService {
       },
       body: jsonEncode({'username': username}),
     );
-
     if (response.statusCode >= 400) {
       throw Exception('Failed to update username: ${response.body}');
     }
   }
 
-  // ─── AVATAR ──────────────────────────────────────────────────────────────
+  // ─── AVATAR ───────────────────────────────────────────────────────────────
 
   Future<String> uploadAvatar(File imageFile) async {
     if (_userId == null) throw Exception('Not authenticated');
-
     final path = '$_userId/$_userId.jpg';
     final uploadUrl = '$_supabaseUrl/storage/v1/object/avatars/$path';
     final bytes = await imageFile.readAsBytes();
@@ -195,7 +190,6 @@ class SupabaseService {
     if (response.statusCode != 200 && response.statusCode != 201) {
       throw Exception('Avatar upload failed: ${response.body}');
     }
-
     return getAvatarUrl();
   }
 
@@ -206,13 +200,16 @@ class SupabaseService {
   }
 
   // ─── PROGRESS ────────────────────────────────────────────────────────────
+  // streak and last_played_date are now included in both save and load
 
   Future<void> saveProgress(String userId, UserProgress progress) async {
     final body = jsonEncode({
       'user_id': userId,
       'level': progress.level,
       'xp': progress.xp,
-      'high_score': progress.highScore ?? 0,
+      'high_score': progress.highScore,
+      'streak': progress.streak,                        // ← streak persisted
+      'last_played_date': progress.lastPlayedDate,      // ← date persisted
       'unlocked_topics': progress.unlockedTopics,
       'updated_at': DateTime.now().toIso8601String(),
     });
@@ -227,7 +224,7 @@ class SupabaseService {
     );
 
     if (response.statusCode >= 400) {
-      throw Exception('Supabase save error ${response.statusCode}');
+      throw Exception('Supabase save error ${response.statusCode}: ${response.body}');
     }
   }
 
@@ -245,9 +242,11 @@ class SupabaseService {
 
     final row = rows.first as Map<String, dynamic>;
     return UserProgress(
-      level: row['level'] ?? 1,
-      xp: row['xp'] ?? 0,
-      highScore: row['high_score'] ?? 0,
+      level: row['level'] as int? ?? 1,
+      xp: row['xp'] as int? ?? 0,
+      highScore: row['high_score'] as int? ?? 0,
+      streak: row['streak'] as int? ?? 0,                         // ← loaded
+      lastPlayedDate: row['last_played_date'] as String?,          // ← loaded
       unlockedTopics: List<String>.from(row['unlocked_topics'] ?? []),
     );
   }

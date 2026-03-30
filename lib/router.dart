@@ -17,14 +17,9 @@ final GoRouter router = GoRouter(
   redirect: (context, state) {
     final isLoggedIn = context.read<UserProvider>().isLoggedIn;
     final isLoginRoute = state.matchedLocation == '/login';
-
-    // Not logged in and not already going to login → redirect to login
     if (!isLoggedIn && !isLoginRoute) return '/login';
-
-    // Logged in but going to login → redirect to home
     if (isLoggedIn && isLoginRoute) return '/';
-
-    return null; // no redirect needed
+    return null;
   },
   routes: [
     GoRoute(
@@ -53,6 +48,7 @@ final GoRouter router = GoRouter(
           isNewGame: extra['isNewGame'] as bool? ?? true,
           previousQuestions:
               (extra['previousQuestions'] as List?)?.cast<String>() ?? [],
+          questionsAnswered: extra['questionsAnswered'] as int? ?? 0, // ← NEW
         );
       },
     ),
@@ -69,7 +65,9 @@ final GoRouter router = GoRouter(
           topic: e['topic'] as String?,
           answerType: e['answerType'] as String,
           isGameOver: e['isGameOver'] as bool,
-          askedQuestions: (e['askedQuestions'] as List?)?.cast<String>() ?? [],
+          askedQuestions:
+              (e['askedQuestions'] as List?)?.cast<String>() ?? [],
+          questionsAnswered: e['questionsAnswered'] as int? ?? 0, // ← NEW
         );
       },
     ),

@@ -245,8 +245,8 @@ class SupabaseService {
       level: row['level'] as int? ?? 1,
       xp: row['xp'] as int? ?? 0,
       highScore: row['high_score'] as int? ?? 0,
-      streak: row['streak'] as int? ?? 0,                         // ← loaded
-      lastPlayedDate: row['last_played_date'] as String?,          // ← loaded
+      streak: row['streak'] as int? ?? 0,                         
+      lastPlayedDate: row['last_played_date'] as String?,          
       unlockedTopics: List<String>.from(row['unlocked_topics'] ?? []),
     );
   }

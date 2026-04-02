@@ -16,7 +16,10 @@ class ResultScreen extends StatefulWidget {
   final String answerType;
   final bool isGameOver;
   final List<String> askedQuestions;
-  final int questionsAnswered; // ← NEW: carries the count across rounds
+  final int questionsAnswered;
+  final int levelsGained;
+  final int xpEarned;
+  final int correctAnswersThisSession; // ← ADD
 
   const ResultScreen({
     super.key,
@@ -29,7 +32,10 @@ class ResultScreen extends StatefulWidget {
     required this.answerType,
     required this.isGameOver,
     this.askedQuestions = const [],
-    this.questionsAnswered = 0, // ← NEW
+    this.questionsAnswered = 0,
+    this.levelsGained = 0,
+    this.xpEarned = 0,
+    this.correctAnswersThisSession = 0, // ← ADD
   });
 
   @override
@@ -41,21 +47,19 @@ class _ResultScreenState extends State<ResultScreen>
   late AnimationController _ctrl;
   late Animation<double> _fadeScale;
 
+  late int _levelsGained;
+  late int _xpEarned;
+
   @override
   void initState() {
     super.initState();
+    _levelsGained = widget.levelsGained;
+    _xpEarned = widget.xpEarned;
+
     _ctrl = AnimationController(
         vsync: this, duration: const Duration(milliseconds: 500));
     _fadeScale = CurvedAnimation(parent: _ctrl, curve: Curves.elasticOut);
     _ctrl.forward();
-
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (widget.isGameOver) {
-        context.read<UserProvider>().updateHighScore(
-              context.read<GameProvider>().score,
-            );
-      }
-    });
   }
 
   @override
@@ -85,7 +89,7 @@ class _ResultScreenState extends State<ResultScreen>
                         label: 'Your Answer',
                         content: widget.userAnswer,
                         accent: correct ? AppTheme.correct : AppTheme.wrong,
-                        icon: correct ? '' : '',
+                        icon: correct ? '✅' : '❌',
                       ),
                       const SizedBox(height: 12),
                     ],
@@ -93,22 +97,26 @@ class _ResultScreenState extends State<ResultScreen>
                       label: 'Best Answer',
                       content: widget.optimalAnswer,
                       accent: AppTheme.mint,
-                      icon: '',
+                      icon: '💡',
                     ),
                     const SizedBox(height: 12),
                     _InfoCard(
                       label: 'Explanation',
                       content: widget.feedback,
                       accent: AppTheme.blue,
-                      icon: '',
+                      icon: '📖',
                     ),
                     if (correct) ...[
                       const SizedBox(height: 12),
-                      _XpBadge(),
+                      _XpBadge(xpEarned: _xpEarned),
                     ],
                     if (widget.isGameOver) ...[
                       const SizedBox(height: 12),
-                      _ScoreSummary(),
+                      const _ScoreSummary(),
+                    ],
+                    if (widget.isGameOver && _levelsGained > 0) ...[
+                      const SizedBox(height: 12),
+                      _LevelUpTeaser(levelsGained: _levelsGained),
                     ],
                   ],
                 ),
@@ -123,7 +131,7 @@ class _ResultScreenState extends State<ResultScreen>
 
   Widget _buildBanner(bool correct) {
     final color = correct ? AppTheme.correct : AppTheme.wrong;
-    final emoji = correct ? '' : '';
+    final emoji = correct ? '✅' : '❌';
     final label = correct ? 'Correct!' : 'Not quite…';
 
     return ScaleTransition(
@@ -150,12 +158,14 @@ class _ResultScreenState extends State<ResultScreen>
                     color: color)),
             if (widget.isGameOver) ...[
               const SizedBox(height: 4),
-              Text('Session complete! ',
-                  style: TextStyle(
-                      fontFamily: 'Nunito',
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                      color: AppTheme.textMid)),
+              const Text(
+                'Session complete! 🎮',
+                style: TextStyle(
+                    fontFamily: 'Nunito',
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: AppTheme.textMid),
+              ),
             ],
           ],
         ),
@@ -164,22 +174,40 @@ class _ResultScreenState extends State<ResultScreen>
   }
 
   Widget _buildActions(BuildContext context) {
+    final gp = context.read<GameProvider>();
+    final up = context.read<UserProvider>();
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
       child: widget.isGameOver
           ? Column(children: [
               _BigButton(
-                label: 'Play Again ',
-                color: AppTheme.purple,
-                onTap: () => context.go('/answer-type', extra: widget.topic),
+                label: _levelsGained > 0
+                    ? 'See Your New Level! 🏆'
+                    : 'Play Again 🎮',
+                color: _levelsGained > 0 ? AppTheme.pink : AppTheme.purple,
+                onTap: () {
+                  if (_levelsGained > 0) {
+                    context.go('/level-up', extra: {
+                      'newLevel': up.progress.level,
+                      'xpEarned': _xpEarned,
+                      'sessionScore': gp.score,
+                    });
+                  } else {
+                    context.go('/answer-type', extra: widget.topic);
+                  }
+                },
               ),
               const SizedBox(height: 10),
-              _OutlineButton(label: 'Home ', onTap: () => context.go('/')),
+              _OutlineButton(
+                label: _levelsGained > 0 ? 'Maybe later 🏠' : 'Home 🏠',
+                onTap: () => context.go('/'),
+              ),
             ])
           : Row(children: [
               Expanded(
                 child: _OutlineButton(
-                  label: 'End ',
+                  label: 'End 🏁',
                   onTap: () => context.go('/'),
                 ),
               ),
@@ -193,13 +221,66 @@ class _ResultScreenState extends State<ResultScreen>
                     'answerType': widget.answerType,
                     'isNewGame': false,
                     'previousQuestions': widget.askedQuestions,
-                    'questionsAnswered': widget.questionsAnswered, // ← NEW: pass count forward
+                    'questionsAnswered': widget.questionsAnswered,
+                    'correctAnswersThisSession': widget.correctAnswersThisSession, // ← ADD
                   }),
                 ),
               ),
             ]),
     );
   }
+}
+
+// ─── Level-up teaser card ─────────────────────────────────────────────────────
+class _LevelUpTeaser extends StatelessWidget {
+  final int levelsGained;
+  const _LevelUpTeaser({required this.levelsGained});
+
+  @override
+  Widget build(BuildContext context) => Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: [
+              AppTheme.purple.withOpacity(0.12),
+              AppTheme.pink.withOpacity(0.10),
+            ],
+          ),
+          borderRadius: BorderRadius.circular(AppTheme.radius),
+          border: Border.all(color: AppTheme.purple.withOpacity(0.3), width: 2),
+        ),
+        child: Row(
+          children: [
+            const Text('🏆', style: TextStyle(fontSize: 28)),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Level${levelsGained > 1 ? 's' : ''} Up!',
+                    style: const TextStyle(
+                      fontFamily: 'Nunito',
+                      fontSize: 15,
+                      fontWeight: FontWeight.w900,
+                      color: AppTheme.purple,
+                    ),
+                  ),
+                  Text(
+                    'You gained $levelsGained level${levelsGained > 1 ? 's' : ''}. Tap above to celebrate! 🎉',
+                    style: const TextStyle(
+                      fontFamily: 'Nunito',
+                      fontSize: 12,
+                      color: AppTheme.textMid,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      );
 }
 
 // ─── Info card ────────────────────────────────────────────────────────────────
@@ -245,6 +326,9 @@ class _InfoCard extends StatelessWidget {
 
 // ─── XP badge ─────────────────────────────────────────────────────────────────
 class _XpBadge extends StatelessWidget {
+  final int xpEarned;
+  const _XpBadge({required this.xpEarned});
+
   @override
   Widget build(BuildContext context) => Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
@@ -253,17 +337,19 @@ class _XpBadge extends StatelessWidget {
           borderRadius: BorderRadius.circular(AppTheme.radiusXl),
           border: Border.all(color: AppTheme.yellow, width: 2),
         ),
-        child: const Row(
+        child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text('', style: TextStyle(fontSize: 16)),
-            SizedBox(width: 8),
-            Text('+20 XP',
-                style: TextStyle(
-                    fontFamily: 'Nunito',
-                    fontWeight: FontWeight.w900,
-                    fontSize: 14,
-                    color: Color(0xFFB8860B))),
+            const Text('⭐', style: TextStyle(fontSize: 16)),
+            const SizedBox(width: 8),
+            Text(
+              xpEarned > 0 ? '+$xpEarned XP this session' : '+20 XP',
+              style: const TextStyle(
+                  fontFamily: 'Nunito',
+                  fontWeight: FontWeight.w900,
+                  fontSize: 14,
+                  color: Color(0xFFB8860B)),
+            ),
           ],
         ),
       );
@@ -271,6 +357,8 @@ class _XpBadge extends StatelessWidget {
 
 // ─── Score summary ────────────────────────────────────────────────────────────
 class _ScoreSummary extends StatelessWidget {
+  const _ScoreSummary();
+
   @override
   Widget build(BuildContext context) {
     final gp = context.watch<GameProvider>();
@@ -287,7 +375,7 @@ class _ScoreSummary extends StatelessWidget {
       ),
       child: Column(
         children: [
-          const Text('', style: TextStyle(fontSize: 36)),
+          const Text('🎮', style: TextStyle(fontSize: 36)),
           const SizedBox(height: 6),
           Text('Final Score',
               style: TextStyle(

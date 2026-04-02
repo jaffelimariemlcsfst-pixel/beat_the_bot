@@ -30,7 +30,6 @@ class ProfileScreen extends StatelessWidget {
                 const SizedBox(width: 12),
                 const Text('My Profile', style: AppTheme.heading),
                 const Spacer(),
-                // ── Logout button ──
                 _LogoutButton(),
               ]),
             ),
@@ -76,14 +75,16 @@ class _LogoutButton extends StatelessWidget {
             shape:
                 RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
             title: const Text('Log out?',
-                style: TextStyle(fontFamily: 'Nunito', fontWeight: FontWeight.w900)),
+                style: TextStyle(
+                    fontFamily: 'Nunito', fontWeight: FontWeight.w900)),
             content: const Text('You can log back in anytime.',
                 style: TextStyle(fontFamily: 'Nunito')),
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(context, false),
                 child: const Text('Cancel',
-                    style: TextStyle(fontFamily: 'Nunito', color: AppTheme.textMid)),
+                    style: TextStyle(
+                        fontFamily: 'Nunito', color: AppTheme.textMid)),
               ),
               TextButton(
                 onPressed: () => Navigator.pop(context, true),
@@ -221,14 +222,12 @@ class _UsernameCardState extends State<_UsernameCard> {
           else if (_editing)
             Row(
               children: [
-                // Cancel
                 GestureDetector(
                   onTap: () => setState(() => _editing = false),
                   child: const Icon(Icons.close_rounded,
                       color: AppTheme.textLight, size: 20),
                 ),
                 const SizedBox(width: 8),
-                // Save
                 GestureDetector(
                   onTap: () => _save(context, provider),
                   child: Container(
@@ -276,7 +275,7 @@ class _UsernameCardState extends State<_UsernameCard> {
     if (name.isEmpty) return;
     try {
       await provider.updateUsername(name);
-      if (mounted) setState(() => _editing = false);  
+      if (mounted) setState(() => _editing = false);
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Username updated! ✅')),
@@ -308,9 +307,11 @@ class _LevelCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final int level = user.level;
-    final int xp = user.xp;
-    final int xpForNext = level * 100;
-    final double progress = ((xp % xpForNext) / xpForNext).clamp(0.0, 1.0);
+
+    // ✅ Delegate all XP math to the model — never recompute in the UI
+    final int xpEarned = user.xpInCurrentLevel;  // e.g. 160 for user with 360 XP at level 2
+    final int xpNeeded = user.xpForNextLevel;     // e.g. 350 (150×2+50)
+    final double progress = user.xpProgress;      // e.g. 0.457 (160/350)
 
     return Container(
       padding: const EdgeInsets.all(22),
@@ -333,7 +334,6 @@ class _LevelCard extends StatelessWidget {
         children: [
           Row(
             children: [
-              // ✅ Avatar in level card (no edit button)
               const UserAvatar(size: 56, showEditButton: false),
               const SizedBox(width: 16),
               Column(
@@ -364,7 +364,8 @@ class _LevelCard extends StatelessWidget {
                       fontFamily: 'Nunito',
                       fontSize: 11,
                       color: Colors.white.withOpacity(0.8))),
-              Text('$xp / $xpForNext',
+              // ✅ Shows XP within current level only, e.g. "160 / 350" not "2620 / 600"
+              Text('$xpEarned / $xpNeeded',
                   style: TextStyle(
                       fontFamily: 'Nunito',
                       fontSize: 11,
@@ -378,7 +379,7 @@ class _LevelCard extends StatelessWidget {
               children: [
                 Container(height: 8, color: Colors.white.withOpacity(0.25)),
                 FractionallySizedBox(
-                  widthFactor: progress,
+                  widthFactor: progress, // ✅ Clamped 0.0–1.0 by the model
                   child: Container(height: 8, color: Colors.white),
                 ),
               ],

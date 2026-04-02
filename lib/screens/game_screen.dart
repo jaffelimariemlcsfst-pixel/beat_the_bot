@@ -15,7 +15,8 @@ class GameScreen extends StatefulWidget {
   final String answerType;
   final bool isNewGame;
   final List<String> previousQuestions;
-  final int questionsAnswered; // ← survives navigation hops via router extra
+  final int questionsAnswered;
+  final int correctAnswersThisSession; // ← ADDED
 
   const GameScreen({
     super.key,
@@ -23,7 +24,8 @@ class GameScreen extends StatefulWidget {
     required this.answerType,
     this.isNewGame = true,
     this.previousQuestions = const [],
-    this.questionsAnswered = 0, // ← NEW
+    this.questionsAnswered = 0,
+    this.correctAnswersThisSession = 0, // ← ADDED
   });
 
   @override
@@ -39,28 +41,37 @@ class _GameScreenState extends State<GameScreen> {
   Question? _question;
   bool _loading = true;
   bool _submitting = false;
-  String? _error;
+
+  _ErrorKind? _errorKind;
+
   int _timeLeft = 60;
   Timer? _timer;
   int _selectedChoice = -1;
   String _resolvedAnswerType = 'write';
   final List<String> _askedQuestions = [];
   List<List<Offset?>> _strokes = [];
-  List<Offset?> _currentStroke = [];
   List<String?> _imageUrls = [];
 
-  // Initialized from widget so it survives round-to-round navigation
   late int _questionsAnswered;
+
+  int _correctAnswersThisSession = 0;
   static const int _streakThreshold = 5;
+
+  late int _levelAtSessionStart;
+  int _sessionXpEarned = 0;
 
   @override
   void initState() {
     super.initState();
-    _questionsAnswered = widget.questionsAnswered; // ← key fix
+    _questionsAnswered = widget.questionsAnswered;
+    _correctAnswersThisSession = widget.correctAnswersThisSession; // ← ADDED
     _askedQuestions.addAll(widget.previousQuestions);
+    _levelAtSessionStart = context.read<UserProvider>().progress.level;
+
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (widget.isNewGame) {
         context.read<GameProvider>().startSession();
+        _levelAtSessionStart = context.read<UserProvider>().progress.level;
       }
       _loadQuestion();
     });
@@ -73,8 +84,6 @@ class _GameScreenState extends State<GameScreen> {
     super.dispose();
   }
 
-  // ─── Timer ───────────────────────────────────────────────────────────────
-
   void _startTimer() {
     _timer?.cancel();
     setState(() => _timeLeft = 60);
@@ -83,21 +92,18 @@ class _GameScreenState extends State<GameScreen> {
       setState(() => _timeLeft--);
       if (_timeLeft <= 0) {
         t.cancel();
-        _submitAnswer('');
+        _submitAnswer('__timeout__');
       }
     });
   }
 
-  // ─── Load question ────────────────────────────────────────────────────────
-
   Future<void> _loadQuestion() async {
     setState(() {
       _loading = true;
-      _error = null;
+      _errorKind = null;
       _selectedChoice = -1;
       _textCtrl.clear();
       _strokes = [];
-      _currentStroke = [];
       _imageUrls = [];
     });
 
@@ -128,10 +134,24 @@ class _GameScreenState extends State<GameScreen> {
       }
 
       _startTimer();
-    } catch (e) {
+    } on AllKeysExhaustedException {
       if (!mounted) return;
       setState(() {
-        _error = e.toString();
+        _errorKind = _ErrorKind.allKeysExhausted;
+        _loading = false;
+      });
+    } on GroqException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _errorKind = e.isRateLimit
+            ? _ErrorKind.rateLimited
+            : _ErrorKind.serverError;
+        _loading = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _errorKind = _ErrorKind.unknown;
         _loading = false;
       });
     }
@@ -142,13 +162,13 @@ class _GameScreenState extends State<GameScreen> {
     return types.first;
   }
 
-  // ─── Submit answer ────────────────────────────────────────────────────────
-
   Future<void> _submitAnswer(String answer) async {
     if (_submitting || _question == null) return;
     final capturedTimeLeft = _timeLeft;
     _timer?.cancel();
     setState(() => _submitting = true);
+
+    final isTimeout = answer == '__timeout__';
 
     try {
       final result = await _aiService.judgeAnswer(
@@ -158,38 +178,84 @@ class _GameScreenState extends State<GameScreen> {
       final gp = context.read<GameProvider>();
       final up = context.read<UserProvider>();
 
-      if (result['isCorrect'] == true) {
+      final isCorrect = result['isCorrect'] == true;
+
+      if (isCorrect) {
         gp.addScore(10, timeLeft: capturedTimeLeft);
         up.addXp(20);
+        _sessionXpEarned += 20;
+        setState(() => _correctAnswersThisSession++);
       } else {
         gp.loseLife();
       }
 
-      // Increment BEFORE passing to result so it displays the updated count
       _questionsAnswered++;
       gp.advanceRound();
 
-      // Game over only when lives run out — no round cap
       final gameOver = gp.lives <= 0;
 
       if (gameOver) {
-        if (_questionsAnswered >= _streakThreshold) {
+        if (_correctAnswersThisSession >= _streakThreshold) {
           up.recordSessionComplete();
         }
         up.updateHighScore(gp.score);
       }
 
+      final levelsGained = up.progress.level - _levelAtSessionStart;
+
+      if (isTimeout && !gameOver && mounted) {
+        setState(() => _submitting = false);
+        final keepPlaying = await _showTimeoutDialog();
+        if (!mounted) return;
+
+        if (!keepPlaying) {
+          up.updateHighScore(gp.score);
+          context.go('/result', extra: {
+            'question': _question,
+            'userAnswer': '__timeout__',
+            'isCorrect': false,
+            'feedback': result['feedback'],
+            'optimalAnswer': result['optimalAnswer'],
+            'topic': widget.topic,
+            'answerType': widget.answerType,
+            'isGameOver': true,
+            'questionsAnswered': _questionsAnswered,
+            'askedQuestions': List<String>.from(_askedQuestions),
+            'levelsGained': levelsGained,
+            'xpEarned': _sessionXpEarned,
+            'correctAnswersThisSession': _correctAnswersThisSession, // ← ADDED
+          });
+          return;
+        }
+      }
+
       context.go('/result', extra: {
         'question': _question,
         'userAnswer': answer,
-        'isCorrect': result['isCorrect'],
+        'isCorrect': isCorrect,
         'feedback': result['feedback'],
         'optimalAnswer': result['optimalAnswer'],
         'topic': widget.topic,
         'answerType': widget.answerType,
         'isGameOver': gameOver,
-        'questionsAnswered': _questionsAnswered, // ← passed forward
+        'questionsAnswered': _questionsAnswered,
         'askedQuestions': List<String>.from(_askedQuestions),
+        'levelsGained': levelsGained,
+        'xpEarned': _sessionXpEarned,
+        'correctAnswersThisSession': _correctAnswersThisSession, // ← ADDED
+      });
+    } on GroqException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _submitting = false;
+        _errorKind =
+            e.isRateLimit ? _ErrorKind.rateLimited : _ErrorKind.serverError;
+      });
+    } on AllKeysExhaustedException {
+      if (!mounted) return;
+      setState(() {
+        _submitting = false;
+        _errorKind = _ErrorKind.allKeysExhausted;
       });
     } catch (_) {
       if (!mounted) return;
@@ -197,17 +263,84 @@ class _GameScreenState extends State<GameScreen> {
     }
   }
 
-  // ─── End session (user-initiated) ─────────────────────────────────────────
+  Future<bool> _showTimeoutDialog() async {
+    return await showDialog<bool>(
+          context: context,
+          barrierDismissible: false,
+          builder: (ctx) => AlertDialog(
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(AppTheme.radius)),
+            backgroundColor: Colors.white,
+            title: const Text(
+              "⏰ Time's Up!",
+              style: TextStyle(
+                fontFamily: 'Nunito',
+                fontWeight: FontWeight.w900,
+                fontSize: 20,
+                color: AppTheme.textDark,
+              ),
+            ),
+            content: const Text(
+              "You lost a life. Do you want to keep playing or end the session?",
+              style: TextStyle(
+                fontFamily: 'Nunito',
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: AppTheme.textMid,
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(false),
+                child: const Text(
+                  'End Session',
+                  style: TextStyle(
+                    fontFamily: 'Nunito',
+                    fontWeight: FontWeight.w700,
+                    color: AppTheme.coral,
+                  ),
+                ),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppTheme.purple,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(20)),
+                ),
+                onPressed: () => Navigator.of(ctx).pop(true),
+                child: const Text(
+                  'Keep Playing',
+                  style: TextStyle(
+                    fontFamily: 'Nunito',
+                    fontWeight: FontWeight.w700,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+  }
 
-  void _endSession() {
+  Future<void> _endSession() async {
     _timer?.cancel();
+
+    final confirmed = await _showEndSessionDialog();
+    if (!confirmed || !mounted) {
+      _startTimer();
+      return;
+    }
+
     final up = context.read<UserProvider>();
     final gp = context.read<GameProvider>();
 
-    if (_questionsAnswered >= _streakThreshold) {
+    if (_correctAnswersThisSession >= _streakThreshold) {
       up.recordSessionComplete();
     }
     up.updateHighScore(gp.score);
+
+    final levelsGained = up.progress.level - _levelAtSessionStart;
 
     context.go('/result', extra: {
       'question': _question,
@@ -220,14 +353,78 @@ class _GameScreenState extends State<GameScreen> {
       'isGameOver': true,
       'questionsAnswered': _questionsAnswered,
       'askedQuestions': List<String>.from(_askedQuestions),
+      'levelsGained': levelsGained,
+      'xpEarned': _sessionXpEarned,
+      'correctAnswersThisSession': _correctAnswersThisSession, // ← ADDED
     });
   }
 
-  // ─── Build ────────────────────────────────────────────────────────────────
+  Future<bool> _showEndSessionDialog() async {
+    return await showDialog<bool>(
+          context: context,
+          barrierDismissible: false,
+          builder: (ctx) => AlertDialog(
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(AppTheme.radius)),
+            backgroundColor: Colors.white,
+            title: const Text(
+              "End Session?",
+              style: TextStyle(
+                fontFamily: 'Nunito',
+                fontWeight: FontWeight.w900,
+                fontSize: 20,
+                color: AppTheme.textDark,
+              ),
+            ),
+            content: const Text(
+              "Are you sure you want to end the session? You'll keep your XP and score, but the game will be over.",
+              style: TextStyle(
+                fontFamily: 'Nunito',
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: AppTheme.textMid,
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(false),
+                child: const Text(
+                  'Keep Playing',
+                  style: TextStyle(
+                    fontFamily: 'Nunito',
+                    fontWeight: FontWeight.w700,
+                    color: AppTheme.purple,
+                  ),
+                ),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppTheme.coral,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(20)),
+                ),
+                onPressed: () => Navigator.of(ctx).pop(true),
+                child: const Text(
+                  'End Session',
+                  style: TextStyle(
+                    fontFamily: 'Nunito',
+                    fontWeight: FontWeight.w700,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+  }
 
   @override
   Widget build(BuildContext context) {
     final gp = context.watch<GameProvider>();
+    final up = context.watch<UserProvider>();
+    final streakEarnedToday = up.progress.streakEarnedToday;
+
     return Scaffold(
       backgroundColor: AppTheme.bg,
       body: SafeArea(
@@ -241,9 +438,9 @@ class _GameScreenState extends State<GameScreen> {
             Expanded(
               child: _loading
                   ? _buildLoading()
-                  : _error != null
-                      ? _buildError()
-                      : _buildGame(),
+                  : _errorKind != null
+                      ? _buildError(_errorKind!)
+                      : _buildGame(streakEarnedToday),
             ),
           ],
         ),
@@ -251,50 +448,118 @@ class _GameScreenState extends State<GameScreen> {
     );
   }
 
-  Widget _buildLoading() => Center(
+  Widget _buildLoading() => const Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const SizedBox(height: 16),
-            const CircularProgressIndicator(
+            CircularProgressIndicator(
                 valueColor: AlwaysStoppedAnimation(AppTheme.purple),
                 strokeWidth: 3),
-            const SizedBox(height: 16),
-            Text('Cooking up a question…',
-                style: TextStyle(
-                    fontFamily: 'Nunito',
-                    fontSize: 14,
-                    color: AppTheme.textMid,
-                    fontWeight: FontWeight.w600)),
+            SizedBox(height: 16),
+            Text(
+              'Cooking up a question…',
+              style: TextStyle(
+                  fontFamily: 'Nunito',
+                  fontSize: 14,
+                  color: AppTheme.textMid,
+                  fontWeight: FontWeight.w600),
+            ),
           ],
         ),
       );
 
-  Widget _buildError() => Center(
-        child: Padding(
-          padding: const EdgeInsets.all(32),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const SizedBox(height: 12),
-              Text(_error!,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                      fontFamily: 'Nunito',
-                      color: AppTheme.textMid,
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600)),
-              const SizedBox(height: 20),
-              _PillButton(
+  Widget _buildError(_ErrorKind kind) {
+    final config = _errorConfig(kind);
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(config.emoji, style: const TextStyle(fontSize: 64)),
+            const SizedBox(height: 20),
+            Text(config.title,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                    fontFamily: 'Nunito',
+                    fontSize: 20,
+                    fontWeight: FontWeight.w900,
+                    color: AppTheme.textDark)),
+            const SizedBox(height: 10),
+            Text(config.message,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                    fontFamily: 'Nunito',
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: AppTheme.textMid,
+                    height: 1.5)),
+            const SizedBox(height: 28),
+            if (config.showRetry)
+              SizedBox(
+                width: double.infinity,
+                child: _PillButton(
                   label: 'Try Again',
                   color: AppTheme.purple,
-                  onTap: _loadQuestion),
-            ],
-          ),
+                  onTap: _loadQuestion,
+                  fullWidth: true,
+                ),
+              ),
+            const SizedBox(height: 12),
+            GestureDetector(
+              onTap: () => context.go('/'),
+              child: Text('Go back home',
+                  style: TextStyle(
+                      fontFamily: 'Nunito',
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                      color: AppTheme.textLight,
+                      decoration: TextDecoration.underline,
+                      decorationColor: AppTheme.textLight)),
+            ),
+          ],
         ),
-      );
+      ),
+    );
+  }
 
-  Widget _buildGame() {
+  _ErrorConfig _errorConfig(_ErrorKind kind) {
+    switch (kind) {
+      case _ErrorKind.rateLimited:
+        return const _ErrorConfig(
+          emoji: '⏳',
+          title: 'Bot needs a breather!',
+          message:
+              'The AI is taking a short break. We\'re switching to a backup — tap "Try Again" and you\'ll be right back in the game.',
+          showRetry: true,
+        );
+      case _ErrorKind.allKeysExhausted:
+        return const _ErrorConfig(
+          emoji: '😴',
+          title: 'The bot is asleep!',
+          message:
+              'The AI has answered so many questions today that it needs to rest until midnight. Come back tomorrow — your progress is saved! 💾',
+          showRetry: false,
+        );
+      case _ErrorKind.serverError:
+        return const _ErrorConfig(
+          emoji: '🔧',
+          title: 'Something went wrong',
+          message:
+              'The AI server is having a moment. Give it a few seconds and try again.',
+          showRetry: true,
+        );
+      case _ErrorKind.unknown:
+        return const _ErrorConfig(
+          emoji: '📡',
+          title: 'Connection issue',
+          message: 'Check your internet connection and try again.',
+          showRetry: true,
+        );
+    }
+  }
+
+  Widget _buildGame(bool streakEarnedToday) {
     final q = _question!;
     return Column(
       children: [
@@ -303,8 +568,9 @@ class _GameScreenState extends State<GameScreen> {
         _SubmitBar(
           submitting: _submitting,
           answerType: q.answerType,
-          questionsAnswered: _questionsAnswered,
+          correctAnswersThisSession: _correctAnswersThisSession,
           streakThreshold: _streakThreshold,
+          streakEarnedToday: streakEarnedToday,
           onSubmit: () {
             String ans;
             switch (_resolvedAnswerType) {
@@ -348,26 +614,35 @@ class _GameScreenState extends State<GameScreen> {
             onSelect: (i) => setState(() => _selectedChoice = i));
       case 'draw':
         return _DrawCanvas(
-            strokes: _strokes,
-            currentStroke: _currentStroke,
-            onClear: () => setState(() {
-                  _strokes = [];
-                  _currentStroke = [];
-                }),
-            onPanStart: (d) => setState(() {
-                  _currentStroke = [d.localPosition];
-                  _strokes.add(_currentStroke);
-                }),
-            onPanUpdate: (d) =>
-                setState(() => _currentStroke.add(d.localPosition)),
-            onPanEnd: (_) => setState(() => _currentStroke.add(null)));
+          strokes: _strokes,
+          onStrokesChanged: (updated) => setState(() => _strokes = updated),
+          onClear: () => setState(() => _strokes = []),
+        );
       default:
         return _WriteInput(controller: _textCtrl);
     }
   }
 }
 
+// ─── Error types ──────────────────────────────────────────────────────────────
+
+enum _ErrorKind { rateLimited, allKeysExhausted, serverError, unknown }
+
+class _ErrorConfig {
+  final String emoji;
+  final String title;
+  final String message;
+  final bool showRetry;
+  const _ErrorConfig({
+    required this.emoji,
+    required this.title,
+    required this.message,
+    required this.showRetry,
+  });
+}
+
 // ─── HUD ─────────────────────────────────────────────────────────────────────
+
 class _HUD extends StatelessWidget {
   final int lives;
   final int questionsAnswered;
@@ -396,7 +671,6 @@ class _HUD extends StatelessWidget {
       ),
       child: Row(
         children: [
-          // Lives
           Row(
               children: List.generate(
                   3,
@@ -411,24 +685,20 @@ class _HUD extends StatelessWidget {
                         ),
                       ))),
           const Spacer(),
-          // Question counter (replaces old Round X/5)
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
             decoration: BoxDecoration(
               color: AppTheme.purple.withOpacity(0.1),
               borderRadius: BorderRadius.circular(20),
             ),
-            child: Text(
-              'Q$questionsAnswered answered',
-              style: const TextStyle(
-                  fontFamily: 'Nunito',
-                  fontSize: 12,
-                  fontWeight: FontWeight.w800,
-                  color: AppTheme.purple),
-            ),
+            child: Text('Q$questionsAnswered answered',
+                style: const TextStyle(
+                    fontFamily: 'Nunito',
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                    color: AppTheme.purple)),
           ),
           const Spacer(),
-          // Timer
           AnimatedDefaultTextStyle(
             duration: const Duration(milliseconds: 200),
             style: TextStyle(
@@ -445,6 +715,7 @@ class _HUD extends StatelessWidget {
 }
 
 // ─── Question card ────────────────────────────────────────────────────────────
+
 class _QuestionCard extends StatelessWidget {
   final Question q;
   const _QuestionCard({required this.q});
@@ -488,6 +759,7 @@ class _QuestionCard extends StatelessWidget {
 }
 
 // ─── Write input ──────────────────────────────────────────────────────────────
+
 class _WriteInput extends StatelessWidget {
   final TextEditingController controller;
   const _WriteInput({required this.controller});
@@ -508,11 +780,11 @@ class _WriteInput extends StatelessWidget {
             style: const TextStyle(
                 fontFamily: 'Nunito', fontSize: 15, color: AppTheme.textDark),
             cursorColor: AppTheme.purple,
-            decoration: InputDecoration(
-              contentPadding: const EdgeInsets.all(18),
+            decoration: const InputDecoration(
+              contentPadding: EdgeInsets.all(18),
               hintText: 'Type your answer here...',
-              hintStyle: const TextStyle(
-                  fontFamily: 'Nunito', color: AppTheme.textLight),
+              hintStyle:
+                  TextStyle(fontFamily: 'Nunito', color: AppTheme.textLight),
               border: InputBorder.none,
             ),
           ),
@@ -521,6 +793,7 @@ class _WriteInput extends StatelessWidget {
 }
 
 // ─── Multiple choice ──────────────────────────────────────────────────────────
+
 class _MultipleChoice extends StatelessWidget {
   final List<String> choices;
   final int selected;
@@ -588,6 +861,7 @@ class _MultipleChoice extends StatelessWidget {
 }
 
 // ─── Pick image ───────────────────────────────────────────────────────────────
+
 class _PickImage extends StatelessWidget {
   final List<String> options;
   final List<String?> imageUrls;
@@ -662,21 +936,15 @@ class _PickImage extends StatelessWidget {
                           ),
                         );
                       },
-                      errorBuilder: (_, __, ___) => _LabelFallback(
-                        label: label,
-                        color: color,
-                        sel: sel,
-                      ),
+                      errorBuilder: (_, __, ___) =>
+                          _LabelFallback(label: label, color: color, sel: sel),
                     )
                   else
                     Container(
                       color: color.withOpacity(0.08),
                       child: Center(
-                        child: CircularProgressIndicator(
-                          color: color,
-                          strokeWidth: 2,
-                        ),
-                      ),
+                          child: CircularProgressIndicator(
+                              color: color, strokeWidth: 2)),
                     ),
                   Positioned(
                     left: 0,
@@ -695,18 +963,15 @@ class _PickImage extends StatelessWidget {
                           ],
                         ),
                       ),
-                      child: Text(
-                        label,
-                        textAlign: TextAlign.center,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontFamily: 'Nunito',
-                          fontWeight: FontWeight.w700,
-                          fontSize: 11,
-                          color: Colors.white,
-                        ),
-                      ),
+                      child: Text(label,
+                          textAlign: TextAlign.center,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              fontFamily: 'Nunito',
+                              fontWeight: FontWeight.w700,
+                              fontSize: 11,
+                              color: Colors.white)),
                     ),
                   ),
                   if (sel)
@@ -716,14 +981,9 @@ class _PickImage extends StatelessWidget {
                       child: Container(
                         padding: const EdgeInsets.all(2),
                         decoration: BoxDecoration(
-                          color: color,
-                          shape: BoxShape.circle,
-                        ),
-                        child: const Icon(
-                          Icons.check_rounded,
-                          color: Colors.white,
-                          size: 14,
-                        ),
+                            color: color, shape: BoxShape.circle),
+                        child: const Icon(Icons.check_rounded,
+                            color: Colors.white, size: 14),
                       ),
                     ),
                 ],
@@ -737,6 +997,7 @@ class _PickImage extends StatelessWidget {
 }
 
 // ─── Label fallback ───────────────────────────────────────────────────────────
+
 class _LabelFallback extends StatelessWidget {
   final String label;
   final Color color;
@@ -750,38 +1011,68 @@ class _LabelFallback extends StatelessWidget {
         child: Center(
           child: Padding(
             padding: const EdgeInsets.all(12),
-            child: Text(
-              label,
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                fontFamily: 'Nunito',
-                fontWeight: FontWeight.w700,
-                fontSize: 13,
-                color: sel ? color : AppTheme.textMid,
-              ),
-            ),
+            child: Text(label,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                    fontFamily: 'Nunito',
+                    fontWeight: FontWeight.w700,
+                    fontSize: 13,
+                    color: sel ? color : AppTheme.textMid)),
           ),
         ),
       );
 }
 
 // ─── Draw canvas ──────────────────────────────────────────────────────────────
-class _DrawCanvas extends StatelessWidget {
+
+class _DrawCanvas extends StatefulWidget {
   final List<List<Offset?>> strokes;
-  final List<Offset?> currentStroke;
+  final ValueChanged<List<List<Offset?>>> onStrokesChanged;
   final VoidCallback onClear;
-  final GestureDragStartCallback onPanStart;
-  final GestureDragUpdateCallback onPanUpdate;
-  final GestureDragEndCallback onPanEnd;
 
   const _DrawCanvas({
     required this.strokes,
-    required this.currentStroke,
+    required this.onStrokesChanged,
     required this.onClear,
-    required this.onPanStart,
-    required this.onPanUpdate,
-    required this.onPanEnd,
   });
+
+  @override
+  State<_DrawCanvas> createState() => _DrawCanvasState();
+}
+
+class _DrawCanvasState extends State<_DrawCanvas> {
+  late List<List<Offset?>> _strokes;
+  List<Offset?> _currentStroke = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _strokes = List.from(widget.strokes);
+  }
+
+  void _onPanStart(DragStartDetails d) {
+    setState(() {
+      _currentStroke = [d.localPosition];
+      _strokes = [..._strokes, _currentStroke];
+    });
+  }
+
+  void _onPanUpdate(DragUpdateDetails d) {
+    setState(() => _currentStroke.add(d.localPosition));
+  }
+
+  void _onPanEnd(DragEndDetails _) {
+    _currentStroke.add(null);
+    widget.onStrokesChanged(List.from(_strokes));
+  }
+
+  void _clear() {
+    setState(() {
+      _strokes = [];
+      _currentStroke = [];
+    });
+    widget.onClear();
+  }
 
   @override
   Widget build(BuildContext context) => Padding(
@@ -790,9 +1081,9 @@ class _DrawCanvas extends StatelessWidget {
           children: [
             Expanded(
               child: GestureDetector(
-                onPanStart: onPanStart,
-                onPanUpdate: onPanUpdate,
-                onPanEnd: onPanEnd,
+                onPanStart: _onPanStart,
+                onPanUpdate: _onPanUpdate,
+                onPanEnd: _onPanEnd,
                 child: Container(
                   decoration: BoxDecoration(
                     color: Colors.white,
@@ -802,14 +1093,16 @@ class _DrawCanvas extends StatelessWidget {
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(AppTheme.radius),
                     child: CustomPaint(
-                        painter: _DrawPainter(strokes), child: Container()),
+                      painter: _DrawPainter(_strokes),
+                      child: const SizedBox.expand(),
+                    ),
                   ),
                 ),
               ),
             ),
             const SizedBox(height: 8),
             GestureDetector(
-              onTap: onClear,
+              onTap: _clear,
               child: Container(
                 padding:
                     const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
@@ -851,56 +1144,57 @@ class _DrawPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_DrawPainter _) => true;
+  bool shouldRepaint(_DrawPainter old) => old.strokes != strokes;
 }
 
 // ─── Submit bar ───────────────────────────────────────────────────────────────
+
 class _SubmitBar extends StatelessWidget {
   final bool submitting;
   final String answerType;
-  final int questionsAnswered;
+  final int correctAnswersThisSession;
   final int streakThreshold;
+  final bool streakEarnedToday;
   final VoidCallback onSubmit;
   final VoidCallback onEndSession;
 
   const _SubmitBar({
     required this.submitting,
     required this.answerType,
-    required this.questionsAnswered,
+    required this.correctAnswersThisSession,
     required this.streakThreshold,
+    required this.streakEarnedToday,
     required this.onSubmit,
     required this.onEndSession,
   });
 
   @override
   Widget build(BuildContext context) {
-    final streakReady = questionsAnswered >= streakThreshold;
+    final streakReady = correctAnswersThisSession >= streakThreshold;
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
       child: Column(
         children: [
           submitting
-              ? Center(
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(
-                              valueColor:
-                                  AlwaysStoppedAnimation(AppTheme.purple),
-                              strokeWidth: 2.5)),
-                      const SizedBox(width: 12),
-                      Text('Judging your answer...',
-                          style: TextStyle(
-                              fontFamily: 'Nunito',
-                              fontSize: 14,
-                              fontWeight: FontWeight.w700,
-                              color: AppTheme.textMid)),
-                    ],
-                  ),
+              ? Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                            valueColor:
+                                AlwaysStoppedAnimation(AppTheme.purple),
+                            strokeWidth: 2.5)),
+                    const SizedBox(width: 12),
+                    const Text('Judging your answer...',
+                        style: TextStyle(
+                            fontFamily: 'Nunito',
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                            color: AppTheme.textMid)),
+                  ],
                 )
               : _PillButton(
                   label: 'Submit Answer',
@@ -908,51 +1202,40 @@ class _SubmitBar extends StatelessWidget {
                   onTap: onSubmit,
                   fullWidth: true,
                 ),
-
           const SizedBox(height: 10),
-
-          // End Session button — grey until streak threshold met, then green
+          if (!streakEarnedToday) ...[
+            _StreakIndicator(
+              correctAnswers: correctAnswersThisSession,
+              threshold: streakThreshold,
+              streakReady: streakReady,
+            ),
+            const SizedBox(height: 8),
+          ],
           GestureDetector(
             onTap: onEndSession,
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 300),
+            child: Container(
               padding:
                   const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
               decoration: BoxDecoration(
-                color: streakReady
-                    ? AppTheme.mint.withOpacity(0.12)
-                    : Colors.transparent,
+                color: Colors.transparent,
                 borderRadius: BorderRadius.circular(20),
                 border: Border.all(
-                  color: streakReady
-                      ? AppTheme.mint
-                      : AppTheme.textLight.withOpacity(0.4),
+                  color: AppTheme.textLight.withOpacity(0.4),
                   width: 1.5,
                 ),
               ),
-              child: Row(
+              child: const Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(
-                    streakReady
-                        ? Icons.local_fire_department_rounded
-                        : Icons.stop_circle_outlined,
-                    size: 16,
-                    color: streakReady ? AppTheme.mint : AppTheme.textLight,
-                  ),
-                  const SizedBox(width: 6),
-                  Text(
-                    streakReady
-                        ? 'End Session  •  Streak earned! 🔥'
-                        : 'End Session  •  ${questionsAnswered}/$streakThreshold for streak',
-                    style: TextStyle(
-                      fontFamily: 'Nunito',
-                      fontSize: 12,
-                      fontWeight: FontWeight.w700,
-                      color:
-                          streakReady ? AppTheme.mint : AppTheme.textLight,
-                    ),
-                  ),
+                  Icon(Icons.stop_circle_outlined,
+                      size: 16, color: AppTheme.textLight),
+                  SizedBox(width: 6),
+                  Text('End Session',
+                      style: TextStyle(
+                          fontFamily: 'Nunito',
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: AppTheme.textLight)),
                 ],
               ),
             ),
@@ -963,7 +1246,62 @@ class _SubmitBar extends StatelessWidget {
   }
 }
 
-// ─── Shared pill button ───────────────────────────────────────────────────────
+// ─── Streak indicator ─────────────────────────────────────────────────────────
+
+class _StreakIndicator extends StatelessWidget {
+  final int correctAnswers;
+  final int threshold;
+  final bool streakReady;
+
+  const _StreakIndicator({
+    required this.correctAnswers,
+    required this.threshold,
+    required this.streakReady,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(
+          streakReady
+              ? Icons.local_fire_department_rounded
+              : Icons.local_fire_department_outlined,
+          size: 14,
+          color: streakReady ? AppTheme.mint : AppTheme.textLight,
+        ),
+        const SizedBox(width: 6),
+        ...List.generate(threshold, (i) {
+          final filled = i < correctAnswers;
+          return Container(
+            width: 10,
+            height: 10,
+            margin: const EdgeInsets.symmetric(horizontal: 2),
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: filled
+                  ? (streakReady ? AppTheme.mint : AppTheme.purple)
+                  : AppTheme.textLight.withOpacity(0.25),
+            ),
+          );
+        }),
+        const SizedBox(width: 6),
+        Text(
+          streakReady ? 'Streak earned! 🔥' : '$correctAnswers/$threshold',
+          style: TextStyle(
+              fontFamily: 'Nunito',
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              color: streakReady ? AppTheme.mint : AppTheme.textLight),
+        ),
+      ],
+    );
+  }
+}
+
+// ─── Pill button ──────────────────────────────────────────────────────────────
+
 class _PillButton extends StatefulWidget {
   final String label;
   final Color color;

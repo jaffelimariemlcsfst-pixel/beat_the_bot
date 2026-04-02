@@ -4,9 +4,12 @@ import 'package:http/http.dart' as http;
 import '../models/question.dart';
 import 'ai_service.dart';
 
+class AllKeysExhaustedException implements Exception {
+  const AllKeysExhaustedException();
+}
 class QuestionCacheService {
-  static const String _supabaseUrl = 'YOUR_SUPABASE_URL'; // e.g. https://xyz.supabase.co
-  static const String _anonKey     = 'YOUR_SUPABASE_ANON_KEY';
+  static const String _supabaseUrl = 'https://yftqbbrocytsggrmuyjj.supabase.co'; // e.g. https://xyz.supabase.co
+  static const String _anonKey     = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlmdHFiYnJvY3l0c2dncm11eWpqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ0NjYwNzUsImV4cCI6MjA5MDA0MjA3NX0.95DFA5l1tQlz_HLECdPyq-6jYRBA8fl-oDHVl_6NF9Q';
   static const String _table       = 'questions';
 
   // How many cached questions minimum before we just pull from cache

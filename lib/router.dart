@@ -9,6 +9,7 @@ import 'screens/game_screen.dart';
 import 'screens/result_screen.dart';
 import 'screens/profile_screen.dart';
 import 'screens/auth_screen.dart';
+import 'screens/level_up_screen.dart';
 import 'providers/user_provider.dart';
 import 'theme/app_theme.dart';
 
@@ -48,7 +49,9 @@ final GoRouter router = GoRouter(
           isNewGame: extra['isNewGame'] as bool? ?? true,
           previousQuestions:
               (extra['previousQuestions'] as List?)?.cast<String>() ?? [],
-          questionsAnswered: extra['questionsAnswered'] as int? ?? 0, // ← NEW
+          questionsAnswered: extra['questionsAnswered'] as int? ?? 0,
+          correctAnswersThisSession:
+              extra['correctAnswersThisSession'] as int? ?? 0, // ← ADDED
         );
       },
     ),
@@ -67,7 +70,22 @@ final GoRouter router = GoRouter(
           isGameOver: e['isGameOver'] as bool,
           askedQuestions:
               (e['askedQuestions'] as List?)?.cast<String>() ?? [],
-          questionsAnswered: e['questionsAnswered'] as int? ?? 0, // ← NEW
+          questionsAnswered: e['questionsAnswered'] as int? ?? 0,
+          levelsGained: e['levelsGained'] as int? ?? 0,
+          xpEarned: e['xpEarned'] as int? ?? 0,
+          correctAnswersThisSession:
+              e['correctAnswersThisSession'] as int? ?? 0, // ← ADDED
+        );
+      },
+    ),
+    GoRoute(
+      path: '/level-up',
+      builder: (_, state) {
+        final e = state.extra as Map<String, dynamic>;
+        return LevelUpScreen(
+          newLevel: e['newLevel'] as int,
+          xpEarned: e['xpEarned'] as int? ?? 0,
+          sessionScore: e['sessionScore'] as int? ?? 0,
         );
       },
     ),

@@ -141,12 +141,21 @@ class UserProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Adds XP and returns the number of levels gained (0 if no level-up).
+  /// Callers use the return value to decide whether to show the level-up screen.
+  ///
+  /// Example:
+  ///   final levelsGained = up.addXp(20);
+  ///   if (levelsGained > 0 && widget.isGameOver) {
+  ///     context.go('/level-up', extra: { ... });
+  ///   }
   int addXp(int amount) {
-    final before = _progress.level;
+    final levelBefore = _progress.level;
     _progress = _progress.addXp(amount);
     notifyListeners();
     _syncProgress();
-    return _progress.level - before;
+    // Returns how many levels were gained — 0 means no celebration needed
+    return _progress.level - levelBefore;
   }
 
   void updateHighScore(int score) {
@@ -158,11 +167,10 @@ class UserProvider extends ChangeNotifier {
   // ─── STREAK ───────────────────────────────────────────────────────────────
 
   /// Called when a session ends with ≥5 questions answered.
-  /// The streak logic lives in UserProgress.recordPlayToday():
+  /// Streak logic lives in UserProgress.recordPlayToday():
   ///   - played today already  → no change (idempotent)
   ///   - played yesterday      → streak + 1
   ///   - not played in 2+ days → streak resets to 1
-  /// Then syncs streak + last_played_date to Supabase.
   void recordSessionComplete() {
     _progress = _progress.recordPlayToday();
     notifyListeners();

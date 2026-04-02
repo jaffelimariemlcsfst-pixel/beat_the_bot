@@ -15,34 +15,73 @@ class UserProgress {
     this.unlockedTopics = const ['Science', 'History', 'General Knowledge'],
   });
 
-  // ── XP needed to reach the NEXT level ──────────────────────────────────────
-  // Level 1→2: 100xp, 2→3: 200xp, etc.
-  int get xpForNextLevel => level * 100;
+  // ── Gentle curve: XP needed to go from level N to N+1 ────────────────────
+  static int _xpNeededForLevel(int lvl) => 150 * lvl + 50;
 
-  // XP accumulated within the current level (for the progress bar)
+  // Total cumulative XP required to REACH a given level from scratch
+  static int _xpRequiredForLevel(int lvl) {
+    if (lvl <= 1) return 0;
+    int total = 0;
+    for (int i = 1; i < lvl; i++) {
+      total += _xpNeededForLevel(i);
+    }
+    return total;
+  }
+
+  // XP needed to complete the current level (denominator on the bar)
+  int get xpForNextLevel => _xpNeededForLevel(level);
+
+  // XP earned within the current level (numerator on the bar)
   int get xpInCurrentLevel => xp - _xpRequiredForLevel(level);
 
-  // Fraction 0.0–1.0 for the XP bar
+  // Fraction 0.0–1.0 for the XP progress bar
   double get xpProgress =>
       (xpInCurrentLevel / xpForNextLevel).clamp(0.0, 1.0);
 
-  // Total XP required to reach a given level from scratch
-  static int _xpRequiredForLevel(int lvl) {
-    // Sum of 100 + 200 + ... + (lvl-1)*100
-    if (lvl <= 1) return 0;
-    return ((lvl - 1) * lvl ~/ 2) * 100;
+  // ── Streak earned today ───────────────────────────────────────────────────
+  // Returns true if the player already completed a session today.
+  // Used by GameScreen to hide the in-game streak indicator once it's locked in.
+  bool get streakEarnedToday => lastPlayedDate == _todayString();
+
+  // ── Level names ───────────────────────────────────────────────────────────
+  static List<String> levelInfo(int lvl) {
+    switch (lvl) {
+      case 1:
+        return ['Dabba Dabba 🐣', 'Just hatched — barely knows what\'s happening'];
+      case 2:
+        return ['Jawek Behi 😏', 'Your answer is... fine. We\'ll take it.'];
+      case 3:
+        return ['El M3allem 🛠️', 'The craftsman has entered the chat'];
+      case 4:
+        return ['El M3allem Plus ⚡', 'Same M3allem, but faster and more dangerous'];
+      case 5:
+        return ['El M3allem Pro Max 💪', 'Fully upgraded. Fear him.'];
+      case 6:
+        return ['El Wa7ch 🐺', 'The beast is loose. Questions tremble.'];
+      case 7:
+        return ['El Wa7ch Ultra 🔥', 'Ultra mode activated. No question is safe.'];
+      case 8:
+        return ['El Ostoura 🌟', 'A legend. They tell stories about this one.'];
+      case 9:
+        return ['El Ostoura Pro 💎', 'Legendarily professional. Even the bot takes notes.'];
+      case 10:
+        return ['El Ostoura Pro Max 👑', 'The final form. Maximum legend unlocked.'];
+      default:
+        return ['Makech 3adi 🚀', 'Beyond all levels. Not even human anymore.'];
+    }
   }
 
-  // ── Add XP and auto-level-up ───────────────────────────────────────────────
+  String get levelName => levelInfo(level)[0];
+  String get levelExplanation => levelInfo(level)[1];
+
+  // ── Add XP and auto-level-up ──────────────────────────────────────────────
   UserProgress addXp(int amount) {
     int newXp = xp + amount;
     int newLevel = level;
     List<String> newTopics = List.from(unlockedTopics);
 
-    // Keep levelling up as long as total XP exceeds the threshold
     while (newXp >= _xpRequiredForLevel(newLevel + 1)) {
       newLevel++;
-      // Unlock topics at the right thresholds
       newTopics = _unlockTopicsForLevel(newLevel, newTopics);
     }
 
@@ -63,19 +102,16 @@ class UserProgress {
     return updated;
   }
 
-  // ── Update high score ──────────────────────────────────────────────────────
+  // ── Update high score ─────────────────────────────────────────────────────
   UserProgress updateHighScore(int score) {
     if (score <= highScore) return this;
     return copyWith(highScore: score);
   }
 
-  // ── Update daily streak ────────────────────────────────────────────────────
+  // ── Update daily streak ───────────────────────────────────────────────────
   UserProgress recordPlayToday() {
     final today = _todayString();
-    if (lastPlayedDate == today) {
-      // Already played today — no change
-      return this;
-    }
+    if (lastPlayedDate == today) return this;
 
     final yesterday = _yesterdayString();
     final newStreak = lastPlayedDate == yesterday ? streak + 1 : 1;
@@ -93,7 +129,7 @@ class UserProgress {
     return '${y.year}-${y.month.toString().padLeft(2, '0')}-${y.day.toString().padLeft(2, '0')}';
   }
 
-  // ── Serialisation ──────────────────────────────────────────────────────────
+  // ── Serialisation ─────────────────────────────────────────────────────────
   UserProgress copyWith({
     int? level,
     int? xp,

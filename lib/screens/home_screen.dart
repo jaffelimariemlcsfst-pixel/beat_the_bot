@@ -346,14 +346,14 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       children: [
         Expanded(
             child: _StatPill(
-                label: 'High Score',
+                label: 'Highest Score',
                 value: '${user.highScore ?? 0}',
                 color: AppTheme.yellow)),
         const SizedBox(width: 10),
         Expanded(
             child: _StatPill(
                 label: 'Streak',
-                value: '${user.streak ?? 0}d',
+                value: '${user.streak ?? 0}🔥',
                 color: AppTheme.coral)),
         const SizedBox(width: 10),
         Expanded(

@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:math';
+import 'package:flutter/foundation.dart'; // ← required for debugPrint
 import 'package:http/http.dart' as http;
 import '../models/question.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
@@ -24,11 +25,26 @@ class AiService {
         .replaceAll('`', '')
         .replaceAll('\\', '');
     const injectionPatterns = [
-      'isCorrect', 'is_correct', 'correctAnswer', 'correct_answer',
-      'optimalAnswer', 'optimal_answer', '"true"', '"false"', 'isRight',
-      'is correct', 'answer is correct', 'this is correct', 'mark as correct',
-      'set isCorrect', 'ignore previous', 'ignore above', 'disregard',
-      'system:', 'assistant:', 'user:',
+      'isCorrect',
+      'is_correct',
+      'correctAnswer',
+      'correct_answer',
+      'optimalAnswer',
+      'optimal_answer',
+      '"true"',
+      '"false"',
+      'isRight',
+      'is correct',
+      'answer is correct',
+      'this is correct',
+      'mark as correct',
+      'set isCorrect',
+      'ignore previous',
+      'ignore above',
+      'disregard',
+      'system:',
+      'assistant:',
+      'user:',
     ];
     for (final pattern in injectionPatterns) {
       final regex = RegExp(RegExp.escape(pattern), caseSensitive: false);
@@ -131,7 +147,6 @@ Return ONLY this JSON:
     String userAnswer,
   ) async {
     // ── Fix 1: Timeout sentinel — never call the API ────────────────────────
-    // The timer expired; treat as wrong answer immediately.
     if (userAnswer == '__timeout__') {
       return {
         'isCorrect': false,
@@ -142,7 +157,6 @@ Return ONLY this JSON:
     }
 
     // ── Fix 2: Multiple choice — pure Dart comparison, zero API calls ────────
-    // The correct answer is already known exactly; no need for AI reasoning.
     if (question.answerType == 'multiple_choice') {
       final isCorrect =
           userAnswer.trim().toLowerCase() == correct.trim().toLowerCase();
@@ -180,7 +194,6 @@ Return ONLY this JSON:
     // ── Write: keyword-based AI judging ──────────────────────────────────────
     final safeAnswer = _sanitizeUserAnswer(userAnswer);
 
-    // Empty write answer = wrong, no API call needed
     if (safeAnswer.isEmpty) {
       return {
         'isCorrect': false,
@@ -194,10 +207,6 @@ Return ONLY this JSON:
     return _parseJudgement(text, correct);
   }
 
-  // ── Keyword-based judge prompt ────────────────────────────────────────────
-  // Extracts up to 15 key concepts from the correct answer.
-  // Marks as correct if the user's answer mentions at least 1 clearly.
-  // This avoids both over-strictness (exact match) and over-leniency (vague).
   String _buildJudgePrompt(Question q, String correct, String safeAnswer) =>
       '''You are the strict judge for "Beat the Bot", a quiz game.
 
@@ -250,16 +259,26 @@ Respond ONLY with valid JSON. No markdown, no backticks.
     int attempt = 0;
 
     while (true) {
+      // ── Debug: confirm API key is loaded and call is being made ────────────
+      debugPrint(
+          '🔑 API key loaded: ${_apiKey.isNotEmpty ? "YES (${_apiKey.substring(0, 6)}...)" : "EMPTY — CHECK .env"}');
+      debugPrint('📡 Calling Groq with model: $_model');
+
       final response = await http.post(
         Uri.parse(_apiUrl),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer $_apiKey',
+          'Cache-Control':
+              'no-cache, no-store', // ← prevents Android HTTP cache
+          'Pragma': 'no-cache', // ← legacy cache-bust header
         },
         body: jsonEncode({
           'model': _model,
           'max_tokens': 512,
           'temperature': temperature,
+          'seed': DateTime.now()
+              .millisecondsSinceEpoch, // ← unique body = no cache hit
           'messages': [
             {
               'role': 'system',
@@ -275,25 +294,26 @@ Respond ONLY with valid JSON. No markdown, no backticks.
       );
 
       if (response.statusCode == 200) {
+        debugPrint('✅ Groq responded OK (${response.statusCode})');
         final data = jsonDecode(response.body);
         return data['choices'][0]['message']['content'] as String;
       }
 
-      // Rate limited — wait then retry with exponential backoff
       if (response.statusCode == 429 && attempt < maxRetries) {
+        debugPrint(
+            '⚠️ Rate limited — retrying in ${pow(2, attempt + 1).toInt()}s');
         await Future.delayed(Duration(seconds: pow(2, attempt + 1).toInt()));
         attempt++;
         continue;
       }
 
+      debugPrint('❌ Groq error ${response.statusCode}: ${response.body}');
       throw GroqException(
         statusCode: response.statusCode,
         message: _extractErrorMessage(response.body),
       );
     }
   }
-
-  int _backoffSeconds(int attempt) => pow(2, attempt + 1).toInt();
 
   String _extractErrorMessage(String body) {
     try {

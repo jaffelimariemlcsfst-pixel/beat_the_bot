@@ -402,7 +402,7 @@ class _StatsRow extends StatelessWidget {
         children: [
           Expanded(
               child: _StatTile(
-                  label: 'High Score',
+                  label: 'Highest Score',
                   value: '${user.highScore}',
                   emoji: '',
                   color: AppTheme.yellow)),

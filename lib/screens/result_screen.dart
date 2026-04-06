@@ -174,7 +174,9 @@ class _ResultScreenState extends State<ResultScreen>
   }
 
   Widget _buildActions(BuildContext context) {
-    final gp = context.read<GameProvider>();
+    // ✅ Only read UserProvider here — GameProvider.score is unreliable after
+    //    go_router destroys/recreates the widget tree at session end.
+    //    All session state must come from the route extra map (widget params).
     final up = context.read<UserProvider>();
 
     return Padding(
@@ -191,7 +193,8 @@ class _ResultScreenState extends State<ResultScreen>
                     context.go('/level-up', extra: {
                       'newLevel': up.progress.level,
                       'xpEarned': _xpEarned,
-                      'sessionScore': gp.score,
+                      // ✅ Use questionsAnswered from route extra, not gp.score
+                      'sessionScore': widget.questionsAnswered,
                     });
                   } else {
                     context.go('/answer-type', extra: widget.topic);

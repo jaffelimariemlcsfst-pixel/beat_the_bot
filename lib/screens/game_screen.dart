@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import '../services/ai_service.dart';
 import '../services/question_cache_service.dart';
 import 'package:flutter/material.dart';
@@ -143,9 +144,8 @@ class _GameScreenState extends State<GameScreen> {
     } on GroqException catch (e) {
       if (!mounted) return;
       setState(() {
-        _errorKind = e.isRateLimit
-            ? _ErrorKind.rateLimited
-            : _ErrorKind.serverError;
+        _errorKind =
+            e.isRateLimit ? _ErrorKind.rateLimited : _ErrorKind.serverError;
         _loading = false;
       });
     } catch (_) {
@@ -585,7 +585,7 @@ class _GameScreenState extends State<GameScreen> {
                     ? ''
                     : (q.imageOptions?[_selectedChoice] ?? '');
               case 'draw':
-                ans = _strokes.isNotEmpty ? '[drawing submitted]' : '';
+                ans = _strokes.isEmpty ? '' : _describeStrokes(_strokes);
               default:
                 ans = _textCtrl.text.trim();
             }
@@ -622,6 +622,96 @@ class _GameScreenState extends State<GameScreen> {
         return _WriteInput(controller: _textCtrl);
     }
   }
+}
+
+// ─── Draw stroke geometry → text description ─────────────────────────────────
+// Converts raw Offset strokes into a human-readable description that the
+// Groq judge can actually reason about. No ML — pure geometric heuristics.
+String _describeStrokes(List<List<Offset?>> strokes) {
+  // Flatten all valid points
+  final points = strokes.expand((s) => s).whereType<Offset>().toList();
+
+  if (points.isEmpty) return '__empty__';
+
+  final strokeCount = strokes.length;
+  final totalPoints = points.length;
+
+  // Bounding box
+  double minX = points.first.dx, maxX = points.first.dx;
+  double minY = points.first.dy, maxY = points.first.dy;
+  for (final p in points) {
+    if (p.dx < minX) minX = p.dx;
+    if (p.dx > maxX) maxX = p.dx;
+    if (p.dy < minY) minY = p.dy;
+    if (p.dy > maxY) maxY = p.dy;
+  }
+  final width = maxX - minX;
+  final height = maxY - minY;
+  final aspectRatio = height == 0 ? 0.0 : width / height;
+
+  // Center of mass
+  final cx = points.map((p) => p.dx).reduce((a, b) => a + b) / points.length;
+  final cy = points.map((p) => p.dy).reduce((a, b) => a + b) / points.length;
+
+  // Estimate total ink length
+  double inkLength = 0;
+  for (final stroke in strokes) {
+    final valid = stroke.whereType<Offset>().toList();
+    for (int i = 1; i < valid.length; i++) {
+      inkLength += (valid[i] - valid[i - 1]).distance;
+    }
+  }
+
+  // Shape descriptors
+  final sizeDesc = width < 40 && height < 40
+      ? 'very small mark'
+      : width < 80 || height < 80
+          ? 'small shape'
+          : 'full-sized drawing';
+
+  final aspectDesc = aspectRatio > 1.6
+      ? 'wider than tall (landscape)'
+      : aspectRatio < 0.6
+          ? 'taller than wide (portrait)'
+          : 'roughly square proportions';
+
+  final strokeDesc = strokeCount == 1
+      ? 'drawn in a single continuous stroke'
+      : strokeCount <= 3
+          ? 'drawn with $strokeCount strokes'
+          : 'drawn with $strokeCount strokes (complex)';
+
+  // Circularity approximation: compare ink length to bounding box perimeter
+  final bboxPerimeter = 2 * (width + height);
+  final circularityHint = bboxPerimeter > 0 && inkLength > 0
+      ? (inkLength / bboxPerimeter < 1.4
+          ? 'possibly circular or oval'
+          : 'non-circular')
+      : '';
+
+  // Symmetry hint: is center of mass near the geometric center?
+  final geoCx = minX + width / 2;
+  final geoCy = minY + height / 2;
+  final offsetX = (cx - geoCx).abs() / (width + 1);
+  final offsetY = (cy - geoCy).abs() / (height + 1);
+  final symmetryHint = offsetX < 0.15 && offsetY < 0.15
+      ? 'appears symmetric'
+      : 'asymmetric or off-center';
+
+  // Vertical position of mass center (useful for detecting heads/bodies/legs)
+  final relCy = height == 0 ? 0.5 : (cy - minY) / height;
+  final massHint = relCy < 0.4
+      ? 'mass concentrated in upper portion'
+      : relCy > 0.6
+          ? 'mass concentrated in lower portion'
+          : 'mass evenly distributed vertically';
+
+  return 'Drawing analysis: $sizeDesc, $aspectDesc, $strokeDesc. '
+      'Bounding box: ${width.toInt()}x${height.toInt()} px. '
+      'Ink length: ${inkLength.toInt()} px. '
+      '${circularityHint.isNotEmpty ? "$circularityHint, " : ""}'
+      '$symmetryHint, $massHint. '
+      'Total points: $totalPoints.';
 }
 
 // ─── Error types ──────────────────────────────────────────────────────────────
@@ -980,8 +1070,8 @@ class _PickImage extends StatelessWidget {
                       right: 6,
                       child: Container(
                         padding: const EdgeInsets.all(2),
-                        decoration: BoxDecoration(
-                            color: color, shape: BoxShape.circle),
+                        decoration:
+                            BoxDecoration(color: color, shape: BoxShape.circle),
                         child: const Icon(Icons.check_rounded,
                             color: Colors.white, size: 14),
                       ),
@@ -1184,8 +1274,7 @@ class _SubmitBar extends StatelessWidget {
                         width: 18,
                         height: 18,
                         child: CircularProgressIndicator(
-                            valueColor:
-                                AlwaysStoppedAnimation(AppTheme.purple),
+                            valueColor: AlwaysStoppedAnimation(AppTheme.purple),
                             strokeWidth: 2.5)),
                     const SizedBox(width: 12),
                     const Text('Judging your answer...',
@@ -1214,8 +1303,7 @@ class _SubmitBar extends StatelessWidget {
           GestureDetector(
             onTap: onEndSession,
             child: Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
               decoration: BoxDecoration(
                 color: Colors.transparent,
                 borderRadius: BorderRadius.circular(20),

@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 
-
 class UnsplashService {
   static String get _accessKey => dotenv.env['UNSPLASH_ACCESS_KEY'] ?? '';
   static const String _baseUrl = 'https://api.unsplash.com';

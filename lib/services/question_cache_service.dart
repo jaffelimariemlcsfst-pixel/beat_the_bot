@@ -26,10 +26,15 @@ class QuestionCacheService {
   // ─── Main entry point ────────────────────────────────────────────────────────
 
   /// Always generates a fresh question from Groq.
-  /// Saves it to Supabase in the background (for analytics / future use).
-  /// The cache is intentionally NOT used as a question source — it caused
-  /// the same questions repeating every session because the table fills up
-  /// and gets served back indefinitely.
+  ///
+  /// The old approach read from a Supabase cache first, which caused the same
+  /// questions to repeat every session because the table fills up quickly and
+  /// those cached rows are served back indefinitely (up to used_count < 3).
+  ///
+  /// Fix: cache reads are removed entirely. Every question is AI-generated fresh.
+  /// Generated questions are still saved to Supabase in the background so the
+  /// data accumulates for potential future use (analytics, seeding, etc.),
+  /// but they are never read back to serve as questions.
   Future<Question> getQuestion({
     required String topic,
     required String answerType,
@@ -38,20 +43,20 @@ class QuestionCacheService {
     final resolvedType =
         answerType == 'random' ? _randomAnswerType() : answerType;
 
-    // Always generate fresh — no cache read
+    // Always generate fresh from Groq — no cache read
     final fresh = await _ai.generateQuestion(
       topic,
       resolvedType,
       excludeQuestions: excludePrompts,
     );
 
-    // Save to Supabase in the background (fire and forget)
+    // Save to Supabase in the background (fire and forget — not critical)
     _saveToCache(fresh);
 
     return fresh;
   }
 
-  // ─── Cache write ─────────────────────────────────────────────────────────────
+  // ─── Cache write (background only) ───────────────────────────────────────────
 
   Future<void> _saveToCache(Question q) async {
     try {
@@ -74,7 +79,7 @@ class QuestionCacheService {
         body: body,
       );
     } catch (_) {
-      // Saving to cache failed — not critical, question was already returned
+      // Not critical — question was already returned to the player
     }
   }
 

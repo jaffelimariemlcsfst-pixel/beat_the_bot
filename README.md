@@ -162,7 +162,7 @@ git push origin master
 ---
 
 ## 📌 Build Progress
-
+ 
 -  ✅ Phase 0 — Project setup
 -  ✅ Phase 1 — Folder structure
 -  ✅ Phase 2 — Models

@@ -110,11 +110,18 @@ lib/
 │   └── user_provider.dart          # Global level + XP
 ├── 📁 services/
 │   ├── ai_service.dart             # Groq API + question cache
-│   └── supabase_service.dart       # Save/load progress
+│   ├──supabase_service.dart        # Save/load progress
+|   ├── question_cache_service.dart
+│   └──unsplash_service.dart     
 ├── 📁 screens/
 │   ├── home_screen.dart            # 🏠 Main menu
 │   ├── topic_selection_screen.dart # 🗺️ Pick your arena
+|   ├── mode_selection_screen.dart  #still working on it 
 │   ├── answer_type_screen.dart     # 🎯 Pick answer style
+|   ├── auth_screen.dart 
+│   ├── game_screen_patch.dart 
+|   ├── level_up_screen.dart        #still working on it
+
 │   ├── game_screen.dart            # ⚔️ Core gameplay
 │   ├── result_screen.dart          # 📊 Answer reveal + XP
 │   └── profile_screen.dart         # 👤 Stats + badges

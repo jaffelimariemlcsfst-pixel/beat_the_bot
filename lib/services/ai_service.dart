@@ -8,8 +8,41 @@ import 'package:flutter_dotenv/flutter_dotenv.dart';
 class AiService {
   static const String _apiUrl =
       'https://api.groq.com/openai/v1/chat/completions';
-  static String get _apiKey => dotenv.env['GROQ_API_KEY'] ?? '';
   static const String _model = 'llama-3.3-70b-versatile';
+
+  // ─── Multi-key pool ─────────────────────────────────────────────────────────
+  // Reads GROQ_API_KEY, GROQ_API_KEY_2, GROQ_API_KEY_3, ... from .env
+  // Keys are tried in order. On 429, the current key is marked exhausted
+  // and the next one is tried automatically.
+
+  static final List<String> _keyPool = _loadKeyPool();
+  static int _currentKeyIndex = 0;
+
+  static List<String> _loadKeyPool() {
+    final keys = <String>[];
+    // First key (no suffix for backwards compatibility)
+    final first = dotenv.env['GROQ_API_KEY'];
+    if (first != null && first.isNotEmpty) keys.add(first);
+    // Additional keys: GROQ_API_KEY_2, GROQ_API_KEY_3, ...
+    for (int i = 2; i <= 10; i++) {
+      final key = dotenv.env['GROQ_API_KEY_$i'];
+      if (key != null && key.isNotEmpty) keys.add(key);
+    }
+    debugPrint('🔑 Loaded ${keys.length} API key(s)');
+    return keys;
+  }
+
+  static String get _currentKey {
+    if (_keyPool.isEmpty)
+      throw GroqException(
+          statusCode: 401, message: 'No API keys configured in .env');
+    return _keyPool[_currentKeyIndex % _keyPool.length];
+  }
+
+  static void _rotateKey() {
+    _currentKeyIndex = (_currentKeyIndex + 1) % _keyPool.length;
+    debugPrint('🔄 Rotated to API key #${_currentKeyIndex + 1}');
+  }
 
   // ─── Sanitize user input ────────────────────────────────────────────────────
 
@@ -318,16 +351,18 @@ Respond ONLY with valid JSON. No markdown, no backticks.
     double temperature = 0.8,
     int maxRetries = 3,
   }) async {
+    // Total attempts = retries × number of keys available
+    final totalAttempts = maxRetries * _keyPool.length;
     int attempt = 0;
 
-    while (true) {
-      debugPrint('📡 Calling Groq...');
+    while (attempt < totalAttempts) {
+      debugPrint('📡 Calling Groq with key #${_currentKeyIndex + 1}...');
 
       final response = await http.post(
         Uri.parse(_apiUrl),
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': 'Bearer $_apiKey',
+          'Authorization': 'Bearer $_currentKey',
           'Cache-Control': 'no-cache, no-store',
           'Pragma': 'no-cache',
         },
@@ -356,10 +391,12 @@ Respond ONLY with valid JSON. No markdown, no backticks.
         return data['choices'][0]['message']['content'] as String;
       }
 
-      if (response.statusCode == 429 && attempt < maxRetries) {
+      if (response.statusCode == 429) {
         debugPrint(
-            '⚠️ Rate limited — retrying in ${pow(2, attempt + 1).toInt()}s');
-        await Future.delayed(Duration(seconds: pow(2, attempt + 1).toInt()));
+            '⚠️ Key #${_currentKeyIndex + 1} rate limited — rotating...');
+        _rotateKey();
+        await Future.delayed(
+            Duration(seconds: pow(2, (attempt % maxRetries) + 1).toInt()));
         attempt++;
         continue;
       }
@@ -370,6 +407,11 @@ Respond ONLY with valid JSON. No markdown, no backticks.
         message: _extractErrorMessage(response.body),
       );
     }
+
+    throw const GroqException(
+      statusCode: 429,
+      message: 'All API keys are rate limited. Please wait a moment.',
+    );
   }
 
   String _extractErrorMessage(String body) {
